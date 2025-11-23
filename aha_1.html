@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Actionable Health Assistant (AHA)</title>
+  <script src="https://cdn.jsdelivr.net/npm/fuse.js/dist/fuse.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f0f8ff; }
+    h1 { text-align: center; color: #2c3e50; }
+    .container { max-width: 600px; margin: auto; padding: 20px; background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+    input, select, button { padding: 12px; margin: 10px 0; width: 100%; font-size: 16px; border-radius: 8px; border: 1px solid #ccc; }
+    button { background: #27ae60; color: white; border: none; cursor: pointer; font-weight: bold; }
+    button:hover { background: #219653; }
+    .result { margin-top: 20px; padding: 15px; border-left: 5px solid #27ae60; background: #f9f9f9; display: none; }
+    .risk { color: #c0392b; font-weight: bold; }
+    .clinic-details { background: #e8f5e8; padding: 10px; border-radius: 5px; margin-top: 10px; }
+    .helplines { margin-top: 30px; padding: 15px; background: #fff3cd; border-radius: 8px; border-left: 5px solid #ffc107; }
+    .helplines h3 { color: #856404; text-align: center; margin-bottom: 15px; }
+    .helpline-item { display: flex; align-items: center; margin-bottom: 10px; padding: 8px; background: white; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .helpline-icon { font-size: 20px; margin-right: 10px; }
+    .helpline-number { font-size: 18px; font-weight: bold; color: #dc3545; margin-right: 10px; }
+    .helpline-desc { flex: 1; font-size: 14px; }
+    footer { text-align: center; margin-top: 40px; color: #777; font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🏥 Actionable Health Assistant (AHA)</h1>
+  <p>Type your symptom and location for specialized clinic recommendations</p>
+
+  <select id="language" onchange="updateHelplines()">
+    <option value="English">🇬🇧 English</option>
+    <option value="Hindi">🇮🇳 हिंदी</option>
+    <option value="Kannada">🇮🇳 ಕನ್ನಡ</option>
+  </select>
+
+  <input type="text" id="symptom" placeholder="Enter symptom (e.g., skin rash, joint pain)" autofocus />
+  
+  <input type="text" id="location" placeholder="Your village/town (e.g., Dalasanur, Mysuru)" />
+
+  <button onclick="searchSymptom()">Search</button>
+
+  <div id="result" class="result">
+    <h3>Immediate Action:</h3>
+    <p id="action"></p>
+    <h3 class="risk">⚠️ When to Seek Help:</h3>
+    <p id="risk"></p>
+    <h3>🏥 Recommended Clinic (Symptom-Specific):</h3>
+    <p id="clinic"><strong>Searching...</strong></p>
+    <div id="clinic-details" class="clinic-details" style="display:none;"></div>
+  </div>
+
+  <div id="loading" style="display:none; text-align:center; margin:20px;">
+    <p>Searching health guide...</p>
+  </div>
+
+  <!-- Emergency Helplines Section -->
+  <div id="helplines" class="helplines">
+    <h3>🚨 Emergency Helplines (24x7)</h3>
+    <div id="helpline-list"></div>
+  </div>
+</div>
+
+<script>
+// ================== CONFIGURE HERE ==================
+// Symptoms Sheet (now with Specialty column)
+const SYMPTOMS_SHEET_ID = 'YOUR_SYMPTOMS_SHEET_ID';
+const SYMPTOMS_GID = '0';
+const SYMPTOMS_URL = `https://docs.google.com/spreadsheets/d/${SYMPTOMS_SHEET_ID}/export?format=csv&gid=${SYMPTOMS_GID}`;
+
+// Clinics Sheet
+const CLINICS_SHEET_ID = 'YOUR_CLINICS_SHEET_ID';
+const CLINICS_GID = '0';
+const CLINICS_URL = `https://docs.google.com/spreadsheets/d/${CLINICS_SHEET_ID}/export?format=csv&gid=${CLINICS_GID}`;
+// ====================================================
+
+let healthData = [];
+let clinicsData = [];
+let symptomFuse;
+let clinicFuse;
+
+// Helplines Data (unchanged)
+const HELPLINES = {
+  English: [
+    { icon: '🚑', number: '108', desc: 'Ambulance & Medical Emergency' },
+    { icon: '🚨', number: '112', desc: 'National Emergency (All Services)' },
+    { icon: '👮', number: '100', desc: 'Police Emergency' },
+    { icon: '🔥', number: '101', desc: 'Fire & Rescue' },
+    { icon: '👩‍🍼', number: '1098', desc: 'Child Helpline' },
+    { icon: '♀️', number: '1091', desc: 'Women Helpline (Violence/Safety)' },
+    { icon: '🧠', number: '104', desc: 'Mental Health Helpline' },
+    { icon: '🌍', number: '1363', desc: 'Tourist Helpline' }
+  ],
+  Hindi: [
+    { icon: '🚑', number: '108', desc: 'एम्बुलेंस और मेडिकल इमरजेंसी' },
+    { icon: '🚨', number: '112', desc: 'राष्ट्रीय इमरजेंसी (सभी सेवाएं)' },
+    { icon: '👮', number: '100', desc: 'पुलिस इमरजेंसी' },
+    { icon: '🔥', number: '101', desc: 'आग और बचाव' },
+    { icon: '👩‍🍼', number: '1098', desc: 'बाल हेल्पलाइन' },
+    { icon: '♀️', number: '1091', desc: 'महिला हेल्पलाइन (हिंसा/सुरक्षा)' },
+    { icon: '🧠', number: '104', desc: 'मानसिक स्वास्थ्य हेल्पलाइन' },
+    { icon: '🌍', number: '1363', desc: 'पर्यटक हेल्पलाइन' }
+  ],
+  Kannada: [
+    { icon: '🚑', number: '108', desc: 'ಆಂಬುಲೆನ್ಸ್ ಮತ್ತು ವೈದ್ಯಕೀಯ ತುರ್ತು' },
+    { icon: '🚨', number: '112', desc: 'ರಾಷ್ಟ್ರೀಯ ತುರ್ತು (ಎಲ್ಲಾ ಸೇವೆಗಳು)' },
+    { icon: '👮', number: '100', desc: 'ಪೊಲೀಸ್ ತುರ್ತು' },
+    { icon: '🔥', number: '101', desc: 'ಬೆಂಕಿ ಮತ್ತು ರಕ್ಷಣೆ' },
+    { icon: '👩‍🍼', number: '1098', desc: 'ಬಾಲಕ ಹೆಲ್ಪ್‌ಲೈನ್' },
+    { icon: '♀️', number: '1091', desc: 'ಮಹಿಳಾ ಹೆಲ್ಪ್‌ಲೈನ್ (ಹಿಂಸೆ/ಸುರಕ್ಷತೆ)' },
+    { icon: '🧠', number: '104', desc: 'ಮಾನಸಿಕ ಆರೋಗ್ಯ ಹೆಲ್ಪ್‌ಲೈನ್' },
+    { icon: '🌍', number: '1363', desc: 'ಪರ್ಯಟಕ ಹೆಲ್ಪ್‌ಲೈನ್' }
+  ]
+};
+
+function updateHelplines() {
+  const lang = document.getElementById('language').value;
+  const list = document.getElementById('helpline-list');
+  list.innerHTML = '';
+  HELPLINES[lang].forEach(hp => {
+    const item = document.createElement('div');
+    item.className = 'helpline-item';
+    item.innerHTML = `
+      <span class="helpline-icon">${hp.icon}</span>
+      <a href="tel:${hp.number}" class="helpline-number">${hp.number}</a>
+      <span class="helpline-desc">${hp.desc}</span>
+    `;
+    list.appendChild(item);
+  });
+}
+
+async function loadData() {
+  try {
+    // Load symptoms (now includes Specialty)
+    const sympResponse = await fetch(SYMPTOMS_URL + '&t=' + Date.now());
+    const sympText = await sympResponse.text();
+    healthData = parseCSV(sympText);
+    const symptomOptions = { keys: ['Keyword/Symptom'], threshold: 0.4, includeScore: true };
+    symptomFuse = new Fuse(healthData, symptomOptions);
+
+    // Load clinics
+    const clinicResponse = await fetch(CLINICS_URL + '&t=' + Date.now());
+    const clinicText = await clinicResponse.text();
+    clinicsData = parseCSV(clinicText);
+    const clinicOptions = { 
+      keys: ['Location (Village/Town)', 'Type', 'Notes'], // Search location + type/notes for specialty
+      threshold: 0.3, 
+      includeScore: true 
+    };
+    clinicFuse = new Fuse(clinicsData, clinicOptions);
+
+    console.log("Loaded:", healthData.length, "symptoms &", clinicsData.length, "clinics");
+  } catch (e) {
+    alert("Could not load data. Check Sheet IDs or internet.");
+  }
+  updateHelplines();
+}
+
+function parseCSV(csv) {
+  const lines = csv.trim().split('\n');
+  const headers = lines[0].split(',').map(h => h.trim().replace(/\r/g,''));
+  return lines.slice(1).map(line => {
+    const values = line.split(',').map(v => v.trim().replace(/\r/g,''));
+    let obj = {};
+    headers.forEach((h, i) => obj[h] = values[i] || '');
+    return obj;
+  }).filter(row => Object.keys(row).length > 0);
+}
+
+function getSymptomText(row, lang) {
+  const actionKey = lang === 'English' ? 'Action_English' :
+                    lang === 'Hindi' ? 'Action_Hindi' : 'Action_Kannada';
+  const riskKey = lang === 'English' ? 'Risk_Alert_English' :
+                  lang === 'Hindi' ? 'Risk_Alert_Hindi' : 'Risk_Alert_Kannada';
+  return {
+    action: row[actionKey] || row['Action_English'] || "Rest and hydrate.",
+    risk: row[riskKey] || row['Risk_Alert_English'] || "Seek help if worsens.",
+    generalClinic: row['Nearest_Clinic_Location'] || 'Nearest PHC or call 108',
+    specialty: row['Specialty'] || '' // NEW: Get specialty
+  };
+}
+
+// NEW: Get clinic filtered by location + specialty
+function getSpecialtyClinic(userLocation, specialty) {
+  if (!userLocation) return null;
+  const searchQuery = `${userLocation} ${specialty}`.toLowerCase().trim(); // Combine for fuzzy search
+  const results = clinicFuse.search(searchQuery);
+  if (results.length > 0) {
+    const bestClinic = results[0].item;
+    return {
+      name: bestClinic['Clinic_Name'],
+      address: bestClinic['Address/Phone'],
+      district: bestClinic['District'],
+      taluk: bestClinic['Taluk'],
+      type: bestClinic['Type'],
+      hours: bestClinic['Hours'],
+      notes: bestClinic['Notes'] || 'General services'
+    };
+  }
+  return null;
+}
+
+function searchSymptom() {
+  const input = document.getElementById('symptom').value.trim();
+  const userLocation = document.getElementById('location').value.trim();
+  const lang = document.getElementById('language').value;
+
+  if (!input) return alert("Please enter a symptom");
+
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('result').style.display = 'none';
+
+  setTimeout(() => {
+    const symptomResults = symptomFuse.search(input.toLowerCase());
+    document.getElementById('loading').style.display = 'none';
+
+    if (symptomResults.length === 0) {
+      document.getElementById('action').textContent = "Sorry, no guidance for this symptom yet.";
+      document.getElementById('risk').textContent = "Visit nearest clinic or call 108.";
+      document.getElementById('clinic').textContent = userLocation ? `Search for clinics near ${userLocation}` : 'Call 108';
+      document.getElementById('result').style.display = 'block';
+      return;
+    }
+
+    const bestSymptom = symptomResults[0].item;
+    const symptomText = getSymptomText(bestSymptom, lang);
+    const specialtyClinic = getSpecialtyClinic(userLocation, symptomText.specialty);
+
+    document.getElementById('action').innerHTML = symptomText.action.replace(/\n/g, '<br>');
+    document.getElementById('risk').innerHTML = symptomText.risk.replace(/\n/g, '<br>');
+
+    if (specialtyClinic) {
+      document.getElementById('clinic').innerHTML = `<strong>${specialtyClinic.name}</strong> (${specialtyClinic.type} - ${symptomText.specialty})`;
+      const details = document.getElementById('clinic-details');
+      details.innerHTML = `
+        <strong>Address:</strong> ${specialtyClinic.address}<br>
+        <strong>District/Taluk:</strong> ${specialtyClinic.district} / ${specialtyClinic.taluk}<br>
+        <strong>Hours:</strong> ${specialtyClinic.hours}<br>
+        <strong>Notes:</strong> ${specialtyClinic.notes}
+      `;
+      details.style.display = 'block';
+    } else if (userLocation) {
+      document.getElementById('clinic').innerHTML = `<strong>General (for ${symptomText.specialty}):</strong> ${symptomText.generalClinic} near ${userLocation}`;
+      document.getElementById('clinic-details').style.display = 'none';
+    } else {
+      document.getElementById('clinic').innerHTML = `<strong>General (for ${symptomText.specialty}):</strong> ${symptomText.generalClinic}`;
+      document.getElementById('clinic-details').style.display = 'none';
+    }
+
+    document.getElementById('result').style.display = 'block';
+  }, 800);
+}
+
+// Enter key support
+document.getElementById('symptom').addEventListener('keypress', e => { if (e.key === 'Enter') searchSymptom(); });
+document.getElementById('location').addEventListener('keypress', e => { if (e.key === 'Enter') searchSymptom(); });
+
+// Load data
+loadData();
+</script>
+
+<footer>
+  AHA • Symptom-smart clinic routing • Helplines from 112.gov.in
+</footer>
+</body>
+</html>
